@@ -1,3 +1,33 @@
+# 1.1.72
+
+## 中文
+
+- 版本 **1.1.72**：适配 DSH `0.2.1-rc.2`。
+- **修崩溃**：DSH 0.2.1 起把任何 `unhandledRejection` 视为致命错误并直接结束宿主。`lib/desktop.js` 修官方 CLI shim 时漏掉 `await`（`atomicCopyFile`），一次备份失败就把整个 DSH 打死（crash log: `fatal load failure: ENOENT ... rename '...copytmp'`）。改为同步 `atomicCopyFileSync`，并加 `bak_failed` 分支：没有回退点就不写 shim。
+- **不再丢回退点**：`backupAll` 的 `rename` 在「目标已存在/被占用/目录禁删」时会失败，旧代码照样往下打补丁，结果宿主被改却无法 revert（本机现状：13 个补丁已打、0 个 `.dshpurge.bak`）。现在 rename 失败自动退回直接覆盖拷贝；备份真的失败的文件整份跳过（`backup_failed`），空字节占位 bak 视为无效并重建。
+- **原子写更耐环境**：`atomicWriteSync` / `atomicWriteFile` 遇 `EPERM/EACCES/EBUSY/EEXIST/ENOENT` 退回原地覆盖，ACL 禁止删除的目录（如被沙箱接管的 workspace）也能落盘。
+- **临时文件名防撞**：同一毫秒并发 apply 曾共用同一个 `*.copytmp`，第二个 `rename` 必然 ENOENT —— 加入进程内自增序号。
+- 子进程 `spawn` 补齐 `error` 监听（`wscript.exe`、浏览器打开、`$EDITOR`）：可执行文件缺失不再变成 uncaughtException 打死宿主。
+- **修「清洗没有写进全部宿主，已取消重启」**：#40 `COMPLETE_PROMPT_KEEP_INJECT` 的正则只认 0.1.5/0.2.0 的 `assemble()`；0.2.1 在 `return` 前多了一行 `requiredContexts`，补丁直接跳过 → 缺 `complete prompt keeps inject` 标记 → 重启校验永远失败。新增 `SYSTEM_PROMPT_ASSEMBLE_021` 变体，保留 `requiredContexts` 过滤后再让 complete 预设带上 dsh-purge 注入。
+- **自愈脏目录**：解开的 `resources/app` 只要有补丁痕迹却没有任何 `.dshpurge.bak`（旧版备份失败仍写盘的后遗症），点「应用」会先按 `app.asar` 重解一次，拿回官方基线。
+- **换包脚本更可靠**：`ASAR_SWAP_PS1` 补上按进程名兜底（枚举拿不到 Path 时 rename 会一直失败）、每步写 `%TEMP%\dsh-purge-asar-swap.log`；rename 最终失败也会把应用拉起来，不再把人留在「没有任何窗口」的状态。`.ps1` 改为带 BOM 写出，避免 PowerShell 5.1 把 UTF-8 中文注释按 ANSI 解码。
+- **修 `unknown prompt variable "{{cwd}}"`**：0.2.1 的 `systemPrompt` 只注册 `provider` / `model`，`{{cwd}}` 一渲染就抛错、整轮对话失败（`deployment:persona-suffix`）。插件自己补的 persona-suffix 段改为写死真实工作目录并标 `interpolate:false`；同时注册一个 `cwd` 变量兜底（旧配置 / 用户提示词里的 `{{cwd}}` 也能解析）；`cordis.patch.yml` 里的 `personaSuffix` 不再写 `{{cwd}}`。
+- 元数据：`engines.dsh = ">=0.2.0-rc.1 <0.3.0-0"`、`dshTarget = 0.2.1-rc.2`、cordis peer `~4.0.5`；`dsh.client.inject` 换成现行客户端包（`dsh-client-runtime` / `dsh-client-ui-slots` 已不存在，slots 由 `dsh-client-ui-renderer` 提供）。
+
+## English
+
+- **1.1.72** — works with DSH `0.2.1-rc.2`.
+- **Crash fix**: DSH 0.2.1 treats any `unhandledRejection` as fatal and exits the host. The official-CLI shim repair called `atomicCopyFile` without `await`; one failed backup killed DSH (`fatal load failure: ENOENT ... rename '...copytmp'`). Now synchronous `atomicCopyFileSync`, plus a `bak_failed` path that refuses to patch without a restore point.
+- **Never lose the restore point**: `backupAll`'s rename can fail when the target exists/is locked/the directory denies delete; the old code patched anyway, leaving host files changed with no `.dshpurge.bak`. Rename now falls back to a direct copy, a file whose backup truly failed is skipped (`backup_failed`), and zero-byte placeholder backups are treated as invalid and rebuilt.
+- **Atomic writes tolerate more environments**: `EPERM/EACCES/EBUSY/EEXIST/ENOENT` fall back to an in-place write, so delete-restricted directories still get patched.
+- **Collision-free temp names**: concurrent applies in the same millisecond shared one `*.copytmp`, so the second `rename` was guaranteed ENOENT — now an in-process counter is appended.
+- `spawn` error listeners added (`wscript.exe`, browser opener, `$EDITOR`): a missing executable can no longer surface as a host-killing uncaughtException.
+- **Fix "patches were not written into every host, restart cancelled"**: patch #40 `COMPLETE_PROMPT_KEEP_INJECT` only matched the 0.1.5/0.2.0 `assemble()`; 0.2.1 added a `requiredContexts` line before the `return`, so the patch was skipped, the `complete prompt keeps inject` marker never appeared, and the pre-restart check failed forever. A `SYSTEM_PROMPT_ASSEMBLE_021` variant keeps the `requiredContexts` filter and still prepends the dsh-purge inject to a complete preset.
+- **Self-heal a dirty tree**: if the unpacked `resources/app` carries patch markers but no `.dshpurge.bak` at all (the legacy "backup failed, wrote anyway" state), Apply re-extracts from `app.asar` first so patching starts from the official baseline.
+- **More reliable asar swap**: `ASAR_SWAP_PS1` now falls back to a process-name kill (a path-less process makes the rename retry forever), logs every step to `%TEMP%\dsh-purge-asar-swap.log`, and starts the app even when the rename ultimately fails, instead of leaving the user with no window. `.ps1` files are written with a BOM so PowerShell 5.1 stops decoding UTF-8 comments as ANSI.
+- **Fix `unknown prompt variable "{{cwd}}"`**: 0.2.1's `systemPrompt` registers only `provider` / `model`, so any `{{cwd}}` throws during render and kills the whole turn (`deployment:persona-suffix`). The plugin's own persona-suffix section now carries the resolved working directory and `interpolate:false`; the host half also registers a `cwd` variable for old configs or user prompts that still reference it; `cordis.patch.yml` no longer writes `{{cwd}}` into `personaSuffix`.
+- Metadata: `engines.dsh = ">=0.2.0-rc.1 <0.3.0-0"`, `dshTarget = 0.2.1-rc.2`, cordis peer `~4.0.5`; `dsh.client.inject` now names packages that exist (`dsh-client-runtime` / `dsh-client-ui-slots` are gone; slots come from `dsh-client-ui-renderer`).
+
 # 1.1.71
 
 ## 中文
